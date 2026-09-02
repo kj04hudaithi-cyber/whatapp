@@ -23,11 +23,16 @@ let sock = null;
 let qrDataURL = '';
 let isConnected = false;
 let statusMessage = 'Initializing WhatsApp Engine...';
+let latestPairCode = '';
 
 async function connectToWhatsApp() {
     try {
         const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
-        const { version } = await fetchLatestBaileysVersion();
+        let version = [2, 3000, 1046596687];
+        try {
+            const v = await fetchLatestBaileysVersion();
+            if (v && v.version) version = v.version;
+        } catch (e) {}
 
         console.log(`Using Baileys version: ${version.join('.')}`);
 
@@ -36,10 +41,14 @@ async function connectToWhatsApp() {
             logger: pino({ level: 'silent' }),
             printQRInTerminal: false,
             auth: state,
-            browser: ['MessMate35 Desktop', 'Chrome', '124.0.0'],
+            browser: ['Ubuntu', 'Chrome', '124.0.0'],
+            syncFullHistory: false, // Prevents loading stall / infinite history sync
+            markOnlineOnConnect: false,
+            generateHighQualityLinkPreview: false,
             connectTimeoutMs: 60000,
             defaultQueryTimeoutMs: 0,
-            keepAliveIntervalMs: 10000
+            keepAliveIntervalMs: 25000,
+            getMessage: async (key) => ({ conversation: '' })
         });
 
         sock.ev.on('connection.update', async (update) => {
@@ -48,16 +57,17 @@ async function connectToWhatsApp() {
             if (qr) {
                 qrDataURL = await qrcode.toDataURL(qr);
                 isConnected = false;
-                statusMessage = 'QR Code generated. Please scan with WhatsApp to link.';
+                statusMessage = 'QR Code generated. Please scan to link.';
                 console.log('\n--- SCAN THIS QR CODE WITH WHATSAPP ---');
                 qrcode_term.generate(qr, { small: true });
             }
 
             if (connection === 'close') {
-                const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
+                const statusCode = (lastDisconnect?.error)?.output?.statusCode;
+                const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
                 isConnected = false;
                 statusMessage = `Connection closed (${lastDisconnect?.error?.message || 'reconnecting'}). Reconnecting...`;
-                console.log('Connection closed due to', lastDisconnect?.error, ', reconnecting:', shouldReconnect);
+                console.log('Connection closed. Reconnecting:', shouldReconnect);
                 
                 if (shouldReconnect) {
                     setTimeout(connectToWhatsApp, 3000);
@@ -72,6 +82,7 @@ async function connectToWhatsApp() {
             } else if (connection === 'open') {
                 isConnected = true;
                 qrDataURL = '';
+                latestPairCode = '';
                 statusMessage = 'Connected and ready to send messages!';
                 console.log('✅ WhatsApp connection opened successfully!');
             }
@@ -106,14 +117,17 @@ app.get('/', (req, res) => {
     .badge.online { background: rgba(34,197,94,0.15); color: #22c55e; border: 1px solid rgba(34,197,94,0.3); }
     .badge.waiting { background: rgba(245,158,11,0.15); color: #f59e0b; border: 1px solid rgba(245,158,11,0.3); }
     .qr-box { background: #fff; padding: 16px; border-radius: 16px; display: inline-block; margin-bottom: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
-    .btn { display: inline-block; background: linear-gradient(135deg,#0284c7,#2563eb); color: #fff; padding: 12px 24px; border-radius: 12px; text-decoration: none; font-weight: 700; font-size: 14px; }
+    .pair-section { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 16px; margin: 16px 0; text-align: left; }
+    .input { width: 100%; padding: 12px; border-radius: 10px; background: #060913; border: 1px solid #334155; color: #fff; font-size: 14px; margin-top: 6px; box-sizing: border-box; }
+    .btn { display: inline-block; width: 100%; background: linear-gradient(135deg,#0284c7,#2563eb); color: #fff; padding: 12px 20px; border-radius: 12px; text-decoration: none; font-weight: 700; font-size: 14px; border: none; cursor: pointer; margin-top: 10px; text-align: center; }
+    .code-display { font-size: 26px; font-weight: 800; letter-spacing: 4px; color: #38bdf8; background: #060913; padding: 12px; border-radius: 12px; text-align: center; margin-top: 12px; border: 1px dashed #0284c7; }
   </style>
 </head>
 <body>
   <div class="card">
     <div style="font-size: 44px; margin-bottom: 12px;">⚡</div>
     <div class="title">WhatsApp Cloud Engine</div>
-    <div style="color: #94a3b8; font-size: 13px;">Ultra-Fast Baileys Multi-Device · MessMate35</div>
+    <div style="color: #94a3b8; font-size: 13px;">Ultra-Fast Baileys Engine · MessMate35</div>
     
     <div class="badge ${isConnected ? 'online' : 'waiting'}">
       <span style="width:8px; height:8px; border-radius:50%; background: ${isConnected ? '#22c55e' : '#f59e0b'};"></span>
@@ -127,13 +141,62 @@ app.get('/', (req, res) => {
       </div>
     ` : ''}
 
+    ${!isConnected ? `
+      <div class="pair-section">
+        <div style="font-size: 12px; font-weight: 700; color: #cbd5e1;">OR LINK WITH PHONE NUMBER (No Camera Needed)</div>
+        <div style="font-size: 11px; color: #94a3b8; margin-top: 2px;">Enter your phone number to get an 8-digit code on WhatsApp</div>
+        <input type="text" id="phoneInput" placeholder="e.g. 966501234567 or 88017123456" class="input">
+        <button onclick="requestPairCode()" class="btn">Get Pairing Code &rarr;</button>
+        <div id="codeArea" style="display:none;" class="code-display"></div>
+      </div>
+    ` : ''}
+
     <div style="margin-top: 10px;">
-      <a href="http://mess.freedev.app/" class="btn">Open MessMate35 App &rarr;</a>
+      <a href="http://mess.freedev.app/" class="btn" style="background: rgba(255,255,255,0.06); border: 1px solid #334155;">Open MessMate35 App &rarr;</a>
     </div>
   </div>
+
+  <script>
+    function requestPairCode() {
+      var phone = document.getElementById('phoneInput').value.trim();
+      if (!phone) return alert('Please enter phone number');
+      fetch('/request-pair-code?phone=' + encodeURIComponent(phone))
+        .then(r => r.json())
+        .then(d => {
+          if (d.code) {
+            var el = document.getElementById('codeArea');
+            el.style.display = 'block';
+            el.innerText = d.code;
+            alert('Code generated: ' + d.code + '\\nCheck your WhatsApp notification to enter this code!');
+          } else {
+            alert('Error: ' + (d.error || 'Failed to generate code'));
+          }
+        });
+    }
+  </script>
 </body>
 </html>`;
     res.send(html);
+});
+
+// ── Pairing Code Endpoint ──────────────────────────────────────────────
+app.get('/request-pair-code', async (req, res) => {
+    let phone = req.query.phone || req.query.number;
+    if (!phone) return res.status(400).json({ error: 'Phone number required' });
+
+    phone = String(phone).replace(/\D/g, '');
+    if (phone.startsWith('05') && phone.length === 10) phone = '966' + phone.substring(1);
+    else if (phone.startsWith('5') && phone.length === 9) phone = '966' + phone;
+    else if (phone.startsWith('01') && phone.length === 11) phone = '88' + phone;
+
+    try {
+        if (!sock) return res.status(500).json({ error: 'Socket initializing...' });
+        const code = await sock.requestPairingCode(phone);
+        latestPairCode = code;
+        return res.json({ success: true, phone, code });
+    } catch (e) {
+        return res.status(500).json({ error: e.message });
+    }
 });
 
 // ── API Endpoints ──────────────────────────────────────────────────────
@@ -142,6 +205,7 @@ app.get('/status', (req, res) => {
         connected: isConnected,
         status: statusMessage,
         qr: qrDataURL,
+        pairCode: latestPairCode,
         engine: 'baileys_multi_device'
     });
 });
@@ -151,7 +215,7 @@ app.post('/send', async (req, res) => {
     number = number || phone;
 
     if (!isConnected || !sock) {
-        return res.status(400).json({ success: false, error: 'WhatsApp is not connected yet. Please scan the QR code first.' });
+        return res.status(400).json({ success: false, error: 'WhatsApp is not connected yet. Please scan QR or enter pairing code.' });
     }
 
     if (!number || !message) {
@@ -197,7 +261,7 @@ app.post('/broadcast', async (req, res) => {
             const jid = `${cleanNumber}@s.whatsapp.net`;
             await sock.sendMessage(jid, { text: item.message });
             sent++;
-            await new Promise(r => setTimeout(r, 1200)); // anti-spam delay
+            await new Promise(r => setTimeout(r, 1200));
         } catch (e) {
             failed++;
         }
