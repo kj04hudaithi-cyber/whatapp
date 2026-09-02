@@ -47,7 +47,7 @@ const client = new Client({
     }),
     webVersionCache: {
         type: 'remote',
-        remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1014589042-alpha.html',
+        remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1046596687-alpha.html',
     },
     puppeteer: {
         headless: true,
