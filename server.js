@@ -200,6 +200,8 @@ app.get('/request-pair-code', async (req, res) => {
 });
 
 // ── Option 3: Phone Direct Login (SMS OTP Code) ────────────────────────
+let mobileSock = null;
+
 app.post('/request-otp', async (req, res) => {
     let { phone, number, method } = req.body;
     phone = phone || number;
@@ -211,17 +213,29 @@ app.post('/request-otp', async (req, res) => {
     else if (phone.startsWith('01') && phone.length === 11) phone = '88' + phone;
 
     try {
-        if (!sock) return res.status(500).json({ success: false, error: 'Socket initializing...' });
-        const result = await sock.requestRegistrationCode({
+        const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+        mobileSock = makeWASocket({
+            auth: state,
+            mobile: true,
+            logger: pino({ level: 'silent' })
+        });
+        mobileSock.ev.on('creds.update', saveCreds);
+
+        const countryCode = phone.startsWith('966') ? '966' : (phone.startsWith('880') ? '880' : '966');
+        const nationalNumber = phone.substring(countryCode.length);
+
+        const result = await mobileSock.requestRegistrationCode({
             phoneNumber: '+' + phone,
-            phoneNumberCountryCode: phone.startsWith('966') ? '966' : (phone.startsWith('880') ? '880' : '966'),
-            phoneNumberNationalNumber: phone.substring(3),
+            phoneNumberCountryCode: countryCode,
+            phoneNumberNationalNumber: nationalNumber,
             phoneNumberMobileCountryCode: '620',
             phoneNumberMobileNetworkCode: '01',
             method: method === 'voice' ? 'voice' : 'sms'
         });
-        return res.json({ success: true, message: 'SMS verification code requested', result });
+
+        return res.json({ success: true, message: 'SMS verification code sent to your phone!', result });
     } catch (e) {
+        console.error('Error requesting OTP:', e.message);
         return res.status(500).json({ success: false, error: e.message });
     }
 });
@@ -234,17 +248,32 @@ app.post('/verify-otp', async (req, res) => {
     code = String(code).replace(/\D/g, '');
 
     try {
-        if (!sock) return res.status(500).json({ success: false, error: 'Socket initializing...' });
-        const result = await sock.register({
+        if (!mobileSock) {
+            const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+            mobileSock = makeWASocket({
+                auth: state,
+                mobile: true,
+                logger: pino({ level: 'silent' })
+            });
+            mobileSock.ev.on('creds.update', saveCreds);
+        }
+
+        const countryCode = phone.startsWith('966') ? '966' : (phone.startsWith('880') ? '880' : '966');
+        const nationalNumber = phone.substring(countryCode.length);
+
+        const result = await mobileSock.register({
             phoneNumber: '+' + phone,
-            phoneNumberCountryCode: phone.startsWith('966') ? '966' : '880',
-            phoneNumberNationalNumber: phone.substring(3),
+            phoneNumberCountryCode: countryCode,
+            phoneNumberNationalNumber: nationalNumber,
             code: code
         });
+
         isConnected = true;
+        sock = mobileSock;
         statusMessage = 'Connected and verified via SMS OTP!';
         return res.json({ success: true, message: 'WhatsApp linked successfully via SMS!', result });
     } catch (e) {
+        console.error('Error verifying OTP:', e.message);
         return res.status(500).json({ success: false, error: e.message });
     }
 });
