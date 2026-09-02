@@ -179,7 +179,7 @@ app.get('/', (req, res) => {
     res.send(html);
 });
 
-// ── Pairing Code Endpoint ──────────────────────────────────────────────
+// ── Option 2: 8-Digit Pairing Code Endpoint ────────────────────────────
 app.get('/request-pair-code', async (req, res) => {
     let phone = req.query.phone || req.query.number;
     if (!phone) return res.status(400).json({ error: 'Phone number required' });
@@ -196,6 +196,56 @@ app.get('/request-pair-code', async (req, res) => {
         return res.json({ success: true, phone, code });
     } catch (e) {
         return res.status(500).json({ error: e.message });
+    }
+});
+
+// ── Option 3: Phone Direct Login (SMS OTP Code) ────────────────────────
+app.post('/request-otp', async (req, res) => {
+    let { phone, number, method } = req.body;
+    phone = phone || number;
+    if (!phone) return res.status(400).json({ success: false, error: 'Phone number required' });
+
+    phone = String(phone).replace(/\D/g, '');
+    if (phone.startsWith('05') && phone.length === 10) phone = '966' + phone.substring(1);
+    else if (phone.startsWith('5') && phone.length === 9) phone = '966' + phone;
+    else if (phone.startsWith('01') && phone.length === 11) phone = '88' + phone;
+
+    try {
+        if (!sock) return res.status(500).json({ success: false, error: 'Socket initializing...' });
+        const result = await sock.requestRegistrationCode({
+            phoneNumber: '+' + phone,
+            phoneNumberCountryCode: phone.startsWith('966') ? '966' : (phone.startsWith('880') ? '880' : '966'),
+            phoneNumberNationalNumber: phone.substring(3),
+            phoneNumberMobileCountryCode: '620',
+            phoneNumberMobileNetworkCode: '01',
+            method: method === 'voice' ? 'voice' : 'sms'
+        });
+        return res.json({ success: true, message: 'SMS verification code requested', result });
+    } catch (e) {
+        return res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+app.post('/verify-otp', async (req, res) => {
+    let { phone, code } = req.body;
+    if (!phone || !code) return res.status(400).json({ success: false, error: 'Phone and 6-digit code are required' });
+
+    phone = String(phone).replace(/\D/g, '');
+    code = String(code).replace(/\D/g, '');
+
+    try {
+        if (!sock) return res.status(500).json({ success: false, error: 'Socket initializing...' });
+        const result = await sock.register({
+            phoneNumber: '+' + phone,
+            phoneNumberCountryCode: phone.startsWith('966') ? '966' : '880',
+            phoneNumberNationalNumber: phone.substring(3),
+            code: code
+        });
+        isConnected = true;
+        statusMessage = 'Connected and verified via SMS OTP!';
+        return res.json({ success: true, message: 'WhatsApp linked successfully via SMS!', result });
+    } catch (e) {
+        return res.status(500).json({ success: false, error: e.message });
     }
 });
 
