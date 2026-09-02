@@ -1,106 +1,94 @@
 const express = require('express');
-const { Client, LocalAuth } = require('whatsapp-web.js');
-const qrcode = require('qrcode');
 const cors = require('cors');
-
-process.on('uncaughtException', (err) => {
-    console.error('Uncaught Exception:', err.message);
-});
-process.on('unhandledRejection', (reason, promise) => {
-    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
-});
+const qrcode = require('qrcode');
+const qrcode_term = require('qrcode-terminal');
+const pino = require('pino');
+const fs = require('fs');
+const path = require('path');
+const {
+    default: makeWASocket,
+    DisconnectReason,
+    useMultiFileAuthState,
+    fetchLatestBaileysVersion
+} = require('@whiskeysockets/baileys');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
+const PORT = process.env.PORT || 3001;
+const AUTH_DIR = path.join(__dirname, 'baileys_auth_info');
+
+let sock = null;
 let qrDataURL = '';
 let isConnected = false;
-let statusMessage = 'Initializing...';
+let statusMessage = 'Initializing WhatsApp Engine...';
 
-const fs = require('fs');
-let chromePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+async function connectToWhatsApp() {
+    try {
+        const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+        const { version } = await fetchLatestBaileysVersion();
 
-if (!chromePath) {
-    const possiblePaths = [
-        '/usr/bin/chromium',
-        '/usr/bin/chromium-browser',
-        '/usr/bin/google-chrome-stable',
-        '/usr/bin/google-chrome',
-        'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-        'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-        'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-        'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe'
-    ];
-    for (const p of possiblePaths) {
-        if (fs.existsSync(p)) {
-            chromePath = p;
-            break;
-        }
+        console.log(`Using Baileys version: ${version.join('.')}`);
+
+        sock = makeWASocket({
+            version,
+            logger: pino({ level: 'silent' }),
+            printQRInTerminal: false,
+            auth: state,
+            browser: ['MessMate35 Desktop', 'Chrome', '124.0.0'],
+            connectTimeoutMs: 60000,
+            defaultQueryTimeoutMs: 0,
+            keepAliveIntervalMs: 10000
+        });
+
+        sock.ev.on('connection.update', async (update) => {
+            const { connection, lastDisconnect, qr } = update;
+
+            if (qr) {
+                qrDataURL = await qrcode.toDataURL(qr);
+                isConnected = false;
+                statusMessage = 'QR Code generated. Please scan with WhatsApp to link.';
+                console.log('\n--- SCAN THIS QR CODE WITH WHATSAPP ---');
+                qrcode_term.generate(qr, { small: true });
+            }
+
+            if (connection === 'close') {
+                const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
+                isConnected = false;
+                statusMessage = `Connection closed (${lastDisconnect?.error?.message || 'reconnecting'}). Reconnecting...`;
+                console.log('Connection closed due to', lastDisconnect?.error, ', reconnecting:', shouldReconnect);
+                
+                if (shouldReconnect) {
+                    setTimeout(connectToWhatsApp, 3000);
+                } else {
+                    statusMessage = 'Device logged out. Please re-authenticate.';
+                    qrDataURL = '';
+                    if (fs.existsSync(AUTH_DIR)) {
+                        fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+                    }
+                    setTimeout(connectToWhatsApp, 2000);
+                }
+            } else if (connection === 'open') {
+                isConnected = true;
+                qrDataURL = '';
+                statusMessage = 'Connected and ready to send messages!';
+                console.log('✅ WhatsApp connection opened successfully!');
+            }
+        });
+
+        sock.ev.on('creds.update', saveCreds);
+
+    } catch (err) {
+        console.error('Error in connectToWhatsApp:', err.message);
+        setTimeout(connectToWhatsApp, 5000);
     }
 }
 
-const client = new Client({
-    authStrategy: new LocalAuth({ 
-        dataPath: './.wwebjs_auth',
-        clientId: "mass-bill-client" 
-    }),
-    puppeteer: {
-        headless: true,
-        executablePath: chromePath || undefined,
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-gpu',
-            '--no-first-run',
-            '--disable-blink-features=AutomationControlled'
-        ]
-    }
-});
+// Start connection
+connectToWhatsApp();
 
-const qrcode_term = require('qrcode-terminal');
-
-client.on('qr', async (qr) => {
-    // Generate QR Code as Data URL
-    qrDataURL = await qrcode.toDataURL(qr);
-    statusMessage = 'QR Code generated. Please scan to log in.';
-    isConnected = false;
-    console.log('QR Code ready');
-    
-    // Display QR code in terminal
-    console.log('\nScan this QR code with WhatsApp:\n');
-    qrcode_term.generate(qr, { small: true });
-});
-
-client.on('ready', () => {
-    isConnected = true;
-    qrDataURL = '';
-    statusMessage = 'Connected and ready to send messages!';
-    console.log('Client is ready!');
-});
-
-client.on('authenticated', () => {
-    statusMessage = 'Authenticated. Connecting...';
-    console.log('Authenticated!');
-});
-
-client.on('auth_failure', msg => {
-    statusMessage = 'Authentication failure: ' + msg;
-    isConnected = false;
-    console.error('AUTHENTICATION FAILURE', msg);
-});
-
-client.on('disconnected', (reason) => {
-    statusMessage = 'Client was logged out: ' + reason;
-    isConnected = false;
-    qrDataURL = '';
-    console.log('Client was logged out', reason);
-});
-
-client.initialize();
-
-// API Endpoints
+// ── Web Dashboard (Root /) ─────────────────────────────────────────────
 app.get('/', (req, res) => {
     const html = `<!DOCTYPE html>
 <html lang="en">
@@ -117,15 +105,15 @@ app.get('/', (req, res) => {
     .badge { display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: 20px; font-size: 12px; font-weight: 700; margin: 14px 0 20px; }
     .badge.online { background: rgba(34,197,94,0.15); color: #22c55e; border: 1px solid rgba(34,197,94,0.3); }
     .badge.waiting { background: rgba(245,158,11,0.15); color: #f59e0b; border: 1px solid rgba(245,158,11,0.3); }
-    .qr-box { background: #fff; padding: 16px; border-radius: 16px; display: inline-block; margin-bottom: 20px; }
+    .qr-box { background: #fff; padding: 16px; border-radius: 16px; display: inline-block; margin-bottom: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
     .btn { display: inline-block; background: linear-gradient(135deg,#0284c7,#2563eb); color: #fff; padding: 12px 24px; border-radius: 12px; text-decoration: none; font-weight: 700; font-size: 14px; }
   </style>
 </head>
 <body>
   <div class="card">
-    <div style="font-size: 44px; margin-bottom: 12px;">💬</div>
+    <div style="font-size: 44px; margin-bottom: 12px;">⚡</div>
     <div class="title">WhatsApp Cloud Engine</div>
-    <div style="color: #94a3b8; font-size: 13px;">24/7 Automation Server · MessMate35</div>
+    <div style="color: #94a3b8; font-size: 13px;">Ultra-Fast Baileys Multi-Device · MessMate35</div>
     
     <div class="badge ${isConnected ? 'online' : 'waiting'}">
       <span style="width:8px; height:8px; border-radius:50%; background: ${isConnected ? '#22c55e' : '#f59e0b'};"></span>
@@ -134,7 +122,7 @@ app.get('/', (req, res) => {
 
     ${qrDataURL && !isConnected ? `
       <div class="qr-box">
-        <img src="${qrDataURL}" style="width: 220px; height: 220px; display: block;" alt="Scan QR">
+        <img src="${qrDataURL}" style="width: 220px; height: 220px; display: block; border-radius: 8px;" alt="Scan QR">
         <div style="color: #0f172a; font-size: 11px; font-weight: 800; margin-top: 8px;">SCAN WITH WHATSAPP</div>
       </div>
     ` : ''}
@@ -148,129 +136,76 @@ app.get('/', (req, res) => {
     res.send(html);
 });
 
+// ── API Endpoints ──────────────────────────────────────────────────────
 app.get('/status', (req, res) => {
     res.json({
         connected: isConnected,
         status: statusMessage,
-        qr: qrDataURL
+        qr: qrDataURL,
+        engine: 'baileys_multi_device'
     });
 });
 
-let messageQueue = [];
-let isSending = false;
-
-async function processQueue() {
-    if (isSending || messageQueue.length === 0) return;
-    isSending = true;
-
-    while (messageQueue.length > 0) {
-        const { chatId, message } = messageQueue.shift();
-        try {
-            await client.sendMessage(chatId, message);
-            console.log('Sent queued message to', chatId);
-        } catch (error) {
-            console.error('Error sending message to', chatId, ':', error);
-        }
-        // Wait 1.5 to 3 seconds to avoid spam detection
-        const delay = Math.floor(Math.random() * 1500) + 1500;
-        await new Promise(r => setTimeout(r, delay));
-    }
-    isSending = false;
-}
-
 app.post('/send', async (req, res) => {
-    const { number, message } = req.body;
-    
-    if (!isConnected) {
-        return res.status(503).json({ success: false, error: 'WhatsApp is not connected. Please scan the QR code in the settings.' });
+    let { number, phone, message } = req.body;
+    number = number || phone;
+
+    if (!isConnected || !sock) {
+        return res.status(400).json({ success: false, error: 'WhatsApp is not connected yet. Please scan the QR code first.' });
     }
-    
+
+    if (!number || !message) {
+        return res.status(400).json({ success: false, error: 'Number and message are required.' });
+    }
+
     try {
-        // WhatsApp ID format: countrycode + number + @c.us
-        const cleanNumber = number.replace(/\D/g, '');
-        let finalNumber = cleanNumber;
-        if (cleanNumber.startsWith('01') && cleanNumber.length === 11) {
-            finalNumber = '88' + cleanNumber;
-        } else if (cleanNumber.length === 10) {
-            finalNumber = '880' + cleanNumber;
-        } else if (!cleanNumber.startsWith('88') && cleanNumber.length > 10) {
-           finalNumber = cleanNumber; 
-        }
-        
-        const chatId = finalNumber + '@c.us';
-        
-        messageQueue.push({ chatId, message });
-        processQueue(); // start queue if not running
-        
-        res.json({ success: true, message: 'Message queued successfully' });
-    } catch (error) {
-        console.error('Error queuing message:', error);
-        res.status(500).json({ success: false, error: error.toString() });
+        let cleanNumber = String(number).replace(/\D/g, '');
+        if (cleanNumber.startsWith('05') && cleanNumber.length === 10) cleanNumber = '966' + cleanNumber.substring(1);
+        else if (cleanNumber.startsWith('5') && cleanNumber.length === 9) cleanNumber = '966' + cleanNumber;
+        else if (cleanNumber.startsWith('01') && cleanNumber.length === 11) cleanNumber = '88' + cleanNumber;
+        else if (cleanNumber.length === 10) cleanNumber = '880' + cleanNumber;
+
+        const jid = `${cleanNumber}@s.whatsapp.net`;
+        const result = await sock.sendMessage(jid, { text: message });
+
+        return res.json({ success: true, messageId: result?.key?.id, jid });
+    } catch (err) {
+        console.error('Error sending message:', err.message);
+        return res.status(500).json({ success: false, error: err.message });
     }
 });
 
-app.post('/logout', async (req, res) => {
-    try {
-        await client.logout();
-        isConnected = false;
-        qrDataURL = '';
-        statusMessage = 'Logged out successfully.';
-        client.initialize(); // Re-initialize to get a new QR code
-        res.json({ success: true });
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.toString() });
+app.post('/broadcast', async (req, res) => {
+    const { messages } = req.body;
+    if (!isConnected || !sock) {
+        return res.status(400).json({ success: false, error: 'WhatsApp is not connected yet.' });
     }
-});
+    if (!Array.isArray(messages)) {
+        return res.status(400).json({ success: false, error: 'Invalid messages array.' });
+    }
 
-const ngrok = require('ngrok');
-const localtunnel = require('localtunnel');
+    let sent = 0;
+    let failed = 0;
 
-const PORT = 3001;
-app.listen(PORT, async () => {
-    console.log(`WhatsApp API server running on port ${PORT}`);
-    
-    let url = '';
-    try {
-        console.log('Starting LocalTunnel (subdomain: massbillwhatsapp2)...');
-        const tunnel = await localtunnel({ port: PORT, subdomain: 'massbillwhatsapp2' });
-        url = tunnel.url;
-        
-        tunnel.on('close', () => {
-            console.log('LocalTunnel closed');
-        });
-        tunnel.on('error', (err) => {
-            console.error('LocalTunnel error:', err);
-        });
-    } catch (ltErr) {
-        console.log('Subdomain busy or failed, retrying random localtunnel...');
+    for (const item of messages) {
         try {
-            const tunnel = await localtunnel({ port: PORT });
-            url = tunnel.url;
-        } catch (err2) {
-            console.error('All tunnel attempts failed:', err2.message);
+            let cleanNumber = String(item.number || item.phone).replace(/\D/g, '');
+            if (cleanNumber.startsWith('05') && cleanNumber.length === 10) cleanNumber = '966' + cleanNumber.substring(1);
+            else if (cleanNumber.startsWith('5') && cleanNumber.length === 9) cleanNumber = '966' + cleanNumber;
+            else if (cleanNumber.startsWith('01') && cleanNumber.length === 11) cleanNumber = '88' + cleanNumber;
+
+            const jid = `${cleanNumber}@s.whatsapp.net`;
+            await sock.sendMessage(jid, { text: item.message });
+            sent++;
+            await new Promise(r => setTimeout(r, 1200)); // anti-spam delay
+        } catch (e) {
+            failed++;
         }
     }
-    
-    if (url) {
-        console.log(`\n========================================================`);
-        console.log(`   ✅ SECURE TUNNEL IS LIVE: ${url}`);
-        console.log(`========================================================\n`);
-        
-        const IONOS_SITE_URL = 'https://mass.kj04.online'; 
-        console.log(`Syncing Tunnel URL to IONOS Server...`);
-        
-        fetch(IONOS_SITE_URL + '/actions.php', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: new URLSearchParams({
-                action: 'update_tunnel',
-                secret: 'massbill_secret_123',
-                url: url
-            })
-        }).then(res => res.json())
-          .then(data => {
-              if (data.success) console.log('✅ Successfully synced URL to IONOS!');
-              else console.log('❌ Failed to sync URL to IONOS. Check your secret.');
-          }).catch(err => console.log('❌ Could not reach IONOS Server:', err.message));
-    }
+
+    return res.json({ success: true, sent, failed, total: messages.length });
+});
+
+app.listen(PORT, () => {
+    console.log(`🚀 Baileys WhatsApp Cloud Server running on port ${PORT}`);
 });

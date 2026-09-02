@@ -1,18 +1,18 @@
 {
   "name": "mass-bill-whatsapp-api",
-  "version": "1.0.0",
-  "description": "WhatsApp Web automation for Mass Bill app",
+  "version": "2.0.0",
+  "description": "WhatsApp Multi-Device Cloud Automation (Baileys Engine)",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
+    "@hapi/boom": "^10.0.1",
+    "@whiskeysockets/baileys": "^6.7.8",
     "cors": "^2.8.5",
     "express": "^4.19.2",
-    "localtunnel": "^2.0.2",
-    "ngrok": "^5.0.0-beta.2",
+    "pino": "^8.20.0",
     "qrcode": "^1.5.3",
-    "qrcode-terminal": "^0.12.0",
-    "whatsapp-web.js": "^1.26.0"
+    "qrcode-terminal": "^0.12.0"
   }
 }
