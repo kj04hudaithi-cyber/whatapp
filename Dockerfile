@@ -1,9 +1,11 @@
-FROM node:18-bullseye-slim
+FROM node:20-bullseye-slim
 
 WORKDIR /app
 
+RUN apt-get update && apt-get install -y git python3 make g++ && rm -rf /var/lib/apt/lists/*
+
 COPY package.json ./
-RUN npm install --production
+RUN npm install --omit=dev
 
 COPY . .
 
