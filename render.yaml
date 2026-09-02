@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: messmate35-whatsapp-api
+    env: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    autoDeploy: true
+    envVars:
+      - key: PORT
+        value: 3001
+      - key: NODE_ENV
+        value: production
