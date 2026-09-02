@@ -201,13 +201,48 @@ app.get('/request-pair-code', async (req, res) => {
 
 // ── API Endpoints ──────────────────────────────────────────────────────
 app.get('/status', (req, res) => {
+    let userPhone = '';
+    if (sock && sock.user && sock.user.id) {
+        userPhone = sock.user.id.split(':')[0] || sock.user.id.split('@')[0];
+    }
+
     res.json({
         connected: isConnected,
         status: statusMessage,
         qr: qrDataURL,
         pairCode: latestPairCode,
+        user: userPhone ? { phone: userPhone, name: sock.user.name || '' } : null,
         engine: 'baileys_multi_device'
     });
+});
+
+app.all('/logout', async (req, res) => {
+    try {
+        console.log('🔄 Logout requested. Disconnecting and clearing session...');
+        isConnected = false;
+        qrDataURL = '';
+        latestPairCode = '';
+        statusMessage = 'Logging out and resetting session...';
+
+        if (sock) {
+            try { await sock.logout(); } catch (e) {}
+            try { sock.end(new Error('User logged out')); } catch (e) {}
+        }
+
+        if (fs.existsSync(AUTH_DIR)) {
+            fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+        }
+
+        setTimeout(connectToWhatsApp, 1500);
+
+        if (req.method === 'GET' && req.headers.accept && req.headers.accept.includes('text/html')) {
+            return res.redirect('/');
+        }
+        return res.json({ success: true, message: 'Logged out successfully. Generating new pairing code/QR...' });
+    } catch (err) {
+        console.error('Error during logout:', err.message);
+        return res.status(500).json({ success: false, error: err.message });
+    }
 });
 
 app.post('/send', async (req, res) => {
